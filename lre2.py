@@ -5,20 +5,21 @@
 
 # In[1]:
 
-
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from model import *
+from model2 import *
 from data_loader import *
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import IPython
 import gc
 import matplotlib
+from copy import deepcopy
+
 matplotlib.rcParams.update({'errorbar.capsize': 5})
 
 # get_ipython().run_line_magic('matplotlib', 'inline')
@@ -109,67 +110,7 @@ net, opt = build_model()
 net_losses = []
 plot_step = 100
 net_l = 0
-#
-# smoothing_alpha = 0.9
-# accuracy_log = []
-# for i in tqdm(range(hyperparameters['num_iterations'])):
-#     net.train()
-#     image, labels = next(iter(data_loader))
-#
-#     image = to_var(image, requires_grad=False)
-#     labels = to_var(labels, requires_grad=False)
-#
-#     y = net(image)
-#     cost = F.binary_cross_entropy_with_logits(y, labels)
-#
-#     opt.zero_grad()
-#     cost.backward()
-#     opt.step()
-#
-#     net_l = smoothing_alpha *net_l + (1 - smoothing_alpha)* cost.item()
-#     net_losses.append(net_l/(1 - smoothing_alpha**(i+1)))
-#
-#     if i % plot_step == 0:
-#         net.eval()
-#
-#         acc = []
-#         for itr,(test_img, test_label) in enumerate(test_loader):
-#             test_img = to_var(test_img, requires_grad=False)
-#             test_label = to_var(test_label, requires_grad=False)
-#
-#             output = net(test_img)
-#             predicted = (F.sigmoid(output) > 0.5).int()
-#
-#             acc.append((predicted.int() == test_label.int()).float())
-#
-#         accuracy = torch.cat(acc,dim=0).mean()
-#         accuracy_log.append(np.array([i,accuracy])[None])
-#
-#
-#         IPython.display.clear_output()
-#         fig, axes = plt.subplots(1, 2, figsize=(13,5))
-#         ax1, ax2 = axes.ravel()
-#
-#         ax1.plot(net_losses, label='net_losses')
-#         ax1.set_ylabel("Losses")
-#         ax1.set_xlabel("Iteration")
-#         ax1.legend()
-#
-#         acc_log = np.concatenate(accuracy_log, axis=0)
-#         ax2.plot(acc_log[:,0],acc_log[:,1])
-#         ax2.set_ylabel('Accuracy')
-#         ax2.set_xlabel('Iteration')
-#         plt.show()
 
-
-# As expected, due to the heavily imbalanced training data, the network could not learn how to differentiate between 9 and 4.
-
-# ## Learning to Reweight Examples 
-# Below is a pseudocode of the method proposed in the paper. It is very straightforward.
-
-# <img src="pseudocode.PNG" width="300" />
-# 
-# 
 
 # In[ ]:
 
@@ -192,8 +133,7 @@ def train_lre():
         image, labels = next(iter(data_loader))
         # since validation data is small I just fixed them instead of building an iterator
         # initialize a dummy network for the meta learning of the weights
-        meta_net = LeNet(n_out=1)
-        meta_net.load_state_dict(net.state_dict())
+        meta_net = deepcopy(net)
 
         if torch.cuda.is_available():
             meta_net.cuda()
@@ -202,8 +142,8 @@ def train_lre():
         labels = to_var(labels, requires_grad=False)
 
         # Lines 4 - 5 initial forward pass to compute the initial weighted loss
-        y_f_hat  = meta_net(image)
-        cost = F.binary_cross_entropy_with_logits(y_f_hat,labels, reduce=False)
+        y_f_hat = meta_net(image)
+        cost = F.binary_cross_entropy_with_logits(y_f_hat, labels, reduce=False)
         eps = to_var(torch.zeros(cost.size()))
         l_f_meta = torch.sum(cost * eps)
 
@@ -239,6 +179,7 @@ def train_lre():
         l_f.backward()
         opt.step()
 
+        del meta_net
         meta_l = smoothing_alpha *meta_l + (1 - smoothing_alpha)* l_g_meta.item()
         meta_losses_clean.append(meta_l/(1 - smoothing_alpha**(i+1)))
 
@@ -285,38 +226,4 @@ def train_lre():
 # To get an idea of how robust this method is with respect to the proportion of the dominant class, I varied the proportion from 0.9 to 0.995 and perform 5 runs for each. 
 
 # In[ ]:
-
-
-num_repeats = 5
-proportions = [0.9,0.95, 0.98, 0.99, 0.995]
-accuracy_log = {}
-
-for prop in proportions:
-    data_loader = get_mnist_loader(hyperparameters['batch_size'], classes=[9, 4], proportion=prop, mode="train")
-    val_data = to_var(data_loader.dataset.data_val, requires_grad=False)
-    val_labels = to_var(data_loader.dataset.labels_val, requires_grad=False)
-
-    for k in range(num_repeats):
-        accuracy = train_lre()
-
-        if prop in accuracy_log:
-            accuracy_log[prop].append(accuracy)
-        else:
-            accuracy_log[prop] = [accuracy]
-
-plt.figure(figsize=(10,8))
-for prop in proportions:
-    accuracies = accuracy_log[prop]
-    plt.scatter([prop] * len(accuracies), accuracies)
-
-# plot the trend line with error bars that correspond to standard deviation
-accuracies_mean = np.array([np.mean(v) for k,v in sorted(accuracy_log.items())])
-accuracies_std = np.array([np.std(v) for k,v in sorted(accuracy_log.items())])
-plt.errorbar(proportions, accuracies_mean, yerr=accuracies_std)
-plt.title('Performance on varying class proportions')
-plt.xlabel('proportions')
-plt.ylabel('Accuracy')
-plt.show()
-
-
 # We can see that even at 0.995 proportion of the dominant class in the training data, the model still reaches 90+% accuracy on the balanced test data.
